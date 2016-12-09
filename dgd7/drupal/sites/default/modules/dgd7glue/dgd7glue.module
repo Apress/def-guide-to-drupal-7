@@ -1,0 +1,501 @@
+<?php
+/**
+ * @file
+ *  Site-specific custom code for DefinitiveDrupal.org.
+ */
+
+/**
+ * Implements hook_boot().
+ *
+ * Another approach would allow http://example.com/53/edit to work:
+ * if (is_numeric(substr($_GET['q'], strpos($_GET['q'], '/')))) {
+ *
+ * @TODO replace with http://drupal.org/node/933888 when it lands.
+ */
+function dgd7glue_boot() {
+  if (is_numeric($_GET['q'])) {
+    $_GET['q'] = 'node/' . $_GET['q'];
+  }
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ *
+ * Reveals new view mode for node entities. If you don't see your new view mode
+ * in the Field UI's "manage display" screen, you may need to clear cache or
+ * rebuild menus more than once until you do.
+ */
+function dgd7glue_entity_info_alter(&$entity_info) {
+  $entity_info['node']['view modes']['compact'] = array(
+    'label' => t('Compact'),
+    'custom settings' => FALSE,
+  );
+}
+
+/**
+ * Implements hook_preprocess_node().
+ *
+ * Adds classes and theme hook suggestions specifically for view modes.
+ */
+function dgd7glue_preprocess_node(&$vars) {
+  $view_mode = $vars['view_mode'];
+  $vars['classes_array'][] = 'node-' . $view_mode;
+  $type = $vars['type'];
+  $vars['theme_hook_suggestions'][] = 'node__' . $type . '__' . $view_mode;
+}
+
+/**
+ * Implements hook_preprocess_field().
+ */
+function dgd7glue_preprocess_field(&$vars) {
+  if ($vars['element']['#field_name'] == 'field_number'
+      && $vars['element']['#bundle'] == 'book') {
+    $v = $vars['items'][0]['#markup'];
+    if (is_numeric($v)) {
+      if ($vars['element']['#view_mode'] == 'compact') {
+        $v = t('Ch !n', array('!n' => $v),
+          array('context' => 'Abbreviation for Chapter'));
+      }
+      else {
+        $v = t('Chapter !n', array('!n' => $v));
+      }
+    }
+    else {
+      // It's not a number, so it is an Appendix.
+      if ($vars['element']['#view_mode'] == 'compact') {
+        $v = t('App !n', array('!n' => $v),
+          array('context' => 'Abbreviation for Appendix'));
+      }
+      else {
+        $v = t('Appendix !n', array('!n' => $v));
+      }
+    }
+    $vars['items'][0]['#markup'] = $v;
+    if ($vars['element']['#view_mode'] == 'compact') {
+      // To implement hook_preprocess_field() to give view-mode theme
+      // suggestions, see http://dgd7.org/node/222
+      $vars['theme_hook_suggestion'] = 'dgd7glue_field_single_item_plain';
+    }
+  }
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter().
+ */
+function dgd7glue_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+  // Add action link to 'node/add/suggestion' on 'suggestions' page.
+  if ($root_path == 'suggestions') {
+    $item = menu_get_item('node/add/suggestion');
+    if ($item['access']) {
+      $data['actions']['output'][] = array(
+        '#theme' => 'menu_local_action',
+        '#link' => $item,
+      );
+    }
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function dgd7glue_theme() {
+  return array(
+    'dgd7glue_field_single_item_plain' => array(
+      'render element' => 'element',
+      'function' => 'dgd7glue_field_single_item_plain',
+    ),
+  );
+}
+
+/**
+ * Replaces theme_field() for removing all markup around single-item fields.
+ */
+function dgd7glue_field_single_item_plain($vars) {
+  return drupal_render($vars['items'][0]);
+}
+
+/**
+ * Implements hook_theme_registry_alter().
+ */
+function dgd7glue_theme_registry_alter(&$theme_registry) {
+  // Replace the default preprocess function with our own.
+  foreach ($theme_registry['book_navigation']['preprocess functions'] as $key => $value) {
+    if ($value == 'template_preprocess_book_navigation') {
+      $theme_registry['book_navigation']['preprocess functions'][$key] = 'dgd7glue_template_preprocess_book_navigation';
+      // Once it's found it we're done.
+      break;
+    }
+  }
+}
+
+/**
+ * Implements hook_node_view().
+ */
+function dgd7glue_node_view($node, $view_mode, $langcode) {
+  // Print prev/next links on Suggestion node pages.
+  if ($node->type == 'suggestion' && $view_mode == 'full') {
+    $next = dgd7glue_nextprev_suggestion($node->nid); 
+    $prev = dgd7glue_nextprev_suggestion($node->nid, TRUE);
+    // Make a fake book link array.
+    $link = array();
+    $link['dgd7glue'] = TRUE;
+    $link['prev'] = $prev;
+    $link['next'] = $next;
+    $node->content['dgd7glue_prevnext'] = array(
+      '#markup' => theme('book_navigation', array('book_link' => $link)),
+      '#weight' => 100,
+    );
+  }
+}
+
+/**
+ * Replaces template_preprocess_book_navigation() when using tpl for non-books.
+ *
+ * The sad, sordid history of this hack is summarized at http://dgd7.org/230. 
+ */
+function dgd7glue_template_preprocess_book_navigation(&$variables) {
+  if (!isset($variables['book_link']['dgd7glue'])) {
+    // This is a normal book, just use the usual function.
+    template_preprocess_book_navigation($variables);
+    return;
+  }
+  // Use our fake book_link variable to provide all the same variables.
+  $link = $variables['book_link'];
+  $variables['book_id'] = 'dgd7glue-nextprev';
+  $variables['book_title'] = t('Suggestions');
+  $variables['book_url'] = url('suggestions');
+  $variables['current_depth'] = 0;
+  $variables['tree'] = '';
+  $variables['has_links'] = TRUE;
+  $variables['prev_url'] = NULL; 
+  $variables['next_url'] = NULL; 
+  if ($link['prev']) {
+    $prev_href = url('node/' . $link['prev']['nid']);
+    drupal_add_html_head_link(array('rel' => 'prev', 'href' => $prev_href));
+    $variables['prev_url'] = $prev_href;
+    $variables['prev_title'] = check_plain($link['prev']['title']);
+  }
+
+  $parent_href = $variables['book_url'];
+  drupal_add_html_head_link(array('rel' => 'up', 'href' => $parent_href));
+  $variables['parent_url'] = $parent_href;
+  $variables['parent_title'] = $variables['book_title'];
+
+  if ($link['next']) {
+    $next_href = url('node/' . $link['next']['nid']);
+    drupal_add_html_head_link(array('rel' => 'next', 'href' => $next_href));
+    $variables['next_url'] = $next_href;
+    $variables['next_title'] = check_plain($link['next']['title']);
+  }
+}
+
+/**
+ * Get the next or previous suggestion node nid and title.
+ */
+function dgd7glue_nextprev_suggestion($nid, $previous = FALSE) {
+  // Set the ORDER BY direction and the comparison operator ($co).
+  if ($previous) {
+    $direction = 'DESC';
+    $co = '<';
+  }
+  else {
+    $direction = 'ASC';
+    $co = '>';
+  }
+  return db_query_range("SELECT title, nid FROM {node} WHERE nid $co :nid AND type = :type AND status = :status ORDER BY nid $direction", 0, 1, array(':nid' => $nid, ':type' => 'suggestion', 'status' => 1))->fetchAssoc();
+}
+
+/**
+ * Implements hook_remarkup_defaults().
+ */
+function dgd7glue_remarkup_defaults() {
+  $rm = array();
+  // Define the simple tips-style replacements, machine and human-readable.
+  $tips = array(
+    'tip' => t('Tip'),
+    'note' => t('Note'),
+    'hint' => t('Hint'),
+    'reality' => t('Reality'),
+    'caution' => t('Caution'),
+    'gotcha' => t('Gotcha'),
+    'new' => t('New in 7'),
+  );
+  foreach ($tips as $type => $name) {
+    $rm['[/' . $type . ']'] = array(
+      'before' => '<div class="dgd7-featured dgd7-' . $type . '"><strong class="dgd7-name">' . $name . '</strong>',
+      'after' => '</div>',
+    );
+  }
+  // A few rules are unique.
+  $rm['[/file-txt]'] = array(
+      'before' => '<code>',
+      'after' => '</code>',
+  );
+  // Requires codefilter module, with its filter set to run after remarkup.
+  $rm['[/file-php]'] = array(
+      'before' => '<?php',
+      'after' => '?>',
+  );
+  $rm['[/cli]'] = array(
+    'before' => '<h4>Command-line steps</h4>
+    <tt>',
+    'after' => '</tt>',
+  );
+  return $rm;
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function dgd7glue_field_formatter_info() {
+  return array(
+    'dgd7glue_number_account_link' => array(
+      'label' => t('Account link'),
+      'field types' => array('number_integer'),
+      'settings' => array('web_site' => 'drupal_org'),
+    ),
+    'dgd7glue_text_account_link' => array(
+      'label' => t('Account link'),
+      'field types' => array('text'),
+      'settings' => array('web_site' => 'twitter_com'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_settings_form().
+ */
+function dgd7glue_field_formatter_settings_form($field, $instance, $view_mode, $form, &$form_state) {
+  $element = array();
+
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  if ($display['type'] == 'dgd7glue_number_account_link') {
+    $options = _dgd7glue_number_account_link_options();
+  }
+  else {
+    // Field type is dgd7glue_text_account_link.
+    $options = _dgd7glue_text_account_link_options();
+  }
+
+  $element['web_site'] = array(
+    '#title' => t('Web site or service'),
+    '#type' => 'select',
+    '#options' => $options,
+    '#default_value' => $settings['web_site'],
+    '#required' => TRUE,
+  );
+
+  return $element;
+}
+
+/**
+ * Implements hook_field_formatter_settings_summary().
+ */
+function dgd7glue_field_formatter_settings_summary($field, $instance, $view_mode) {
+  $summary = '';
+
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  if ($display['type'] == 'dgd7glue_number_account_link') {
+    $options = _dgd7glue_number_account_link_options();
+  }
+  else {
+    // Field type is dgd7glue_text_account_link.
+    $options = _dgd7glue_text_account_link_options();
+  }
+
+  $summary .= t('Web site') . ': ' . $options[$settings['web_site']];
+
+  return $summary;
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function dgd7glue_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+
+  // Allow a definition of a function to get the account link title.
+  $title_callback = NULL;
+  
+  switch ($display['type']) {
+    case 'dgd7glue_number_account_link':
+      $item_key = 'value';
+      break;
+    default:
+      $item_key = 'safe_value';
+  }
+
+  // Ordinarily, view formatters switch on the display type, but for the
+  // account link formatters dgd7glue defines, the web site is what matters.
+  switch ($display['settings']['web_site']) {
+    case 'drupal_org':
+      $href = 'http://drupal.org/user/';
+      $title_callback = 'dgd7glue_drupal_page_title';
+      $item_key = 'value';
+      break;
+    case 'groups_drupal_org':
+      $href = 'http://groups.drupal.org/user/';
+      $title_callback = 'dgd7glue_drupal_page_title';
+      $item_key = 'value';
+      break;
+    case 'twitter_com':
+      $href = 'http://twitter.com/';
+      break;
+    case 'identi_ca':
+      $href = 'http://identi.ca/';
+      break;
+  }
+
+  foreach ($items as $delta => $item) {
+    if ($title_callback) {
+      $title = $title_callback($item[$item_key], $href);
+    }
+    else {
+      $title = $item[$item_key];
+    }
+    $href = $href .= $item[$item_key];
+    $element[$delta] = array(
+       '#type' => 'link',
+       '#title' => $title,
+       '#href' => $href,
+     );
+  }
+
+  return $element;
+}
+
+/**
+ * Provides Account link formatter options for integer fields.
+ */
+function _dgd7glue_number_account_link_options() {
+  return array(
+    'drupal_org' => t('Drupal.org'),
+    'groups_drupal_org' => t('Groups.Drupal.org'),
+  );
+}
+
+/**
+ * Provides Account link formatter options for text fields.
+ */
+function _dgd7glue_text_account_link_options() {
+  return array(
+    'twitter_com' => t('Twitter.com'),
+    'identi_ca' => t('Identi.ca'),
+  );
+}
+
+/**
+ * Get the title of a page on a Drupal site.
+ *
+ * Callback for account link titles in dgd7glue_field_formatter_view().
+ */
+function dgd7glue_drupal_page_title($account_id, $href) {
+  $url = $href . $account_id;
+  if ($cache = cache_get('dgd7glue:' . $url, 'cache')) {
+    $title = $cache->data;
+  }
+  else {
+    $result = drupal_http_request($url);
+    // Use $account_id as title if cannot get one, but do not cache it.
+    if ($result->code != 200) {
+      return $account_id;
+    }
+    // Extract the first part of the title from the page's HTML source.
+    preg_match('/<title>(.*?) \|.*?<\/title>/', $result->data, $title_match);
+    $title = $title_match[1] ? $title_match[1] : $account_id;
+    cache_set('dgd7glue:' . $url, $title);
+  }
+  return $title;
+}
+
+/**
+ * Menu callback for listing profile nodes for the Author biographies section.
+ */
+function dgd7glue_profiles() {
+  $query = new EntityFieldQuery();
+  $result = $query->entityCondition('entity_type', 'node', '=')
+          ->propertyCondition('type', 'profile', '=')
+          ->fieldOrderBy('field_pagecount', 'value', 'DESC')
+          ->execute();
+
+  return node_view_multiple(node_load_multiple(array_keys($result['node'])), 'teaser');
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function dgd7glue_views_api() {
+  return array(
+    'api' => '3.0',
+  );
+}
+
+/**
+ * Implements hook_views_default_views().
+ */
+function dgd7glue_views_default_views() {
+  $path = './'. drupal_get_path('module', 'dgd7glue') .'/views/*.inc';
+  $views = array();
+  foreach (glob($path) as $views_filename) {
+     require_once($views_filename);
+  }
+  return $views;
+}
+
+/**
+ * Make an array of items into a proper, punctuated, and sentence-ready list.
+ *
+ * [Copied from xray.module.]
+ *
+ * Based on http://www.drupaler.co.uk/blog/oxford-comma/503
+ * Grammatically fun helper to make a list of things in a sentence, ie
+ * turn an array into a string 'a, b, and c'.
+ *
+ * @param $list
+ *   An array of words or items to join.
+ * @param $settings
+ *   An array of optional settings to use in making the Oxford comma list:
+ *   - type
+ *     The text to use between the last two items. Defaults to 'and'.  Pass in
+ *     'or' and 'and' without translation; translate any other join.
+ *   - comma
+ *     The join for the list.  Defaults to a comma followed by a space.
+ *     To make an Oxford comma list with semicolons, use '; '.
+ *   - oxford
+ *     Change this from default 'TRUE' and you are a philistine.
+ */
+function dgd7glue_oxford_comma_list($list, $settings = array()) {
+  // Set default settings.
+  $comma = ', ';
+  $type = 'and';
+  $oxford = TRUE;
+  // Overwrite default settings with any passed-in settings that apply.
+  extract($settings, EXTR_IF_EXISTS);
+  // Translate 'and' and 'or'.
+  if ($type == 'and') {
+    $type = t('and', array(), array('context' => 'Final join'));
+  }
+  elseif ($type == 'or') {
+    $type = t('or', array(), array('context' => 'Final join'));
+  }
+  // If it is a listing of more than two and the Oxford comma setting is as the
+  // Queen intended, include the comma (or other separator) in the final join.
+  if ($oxford && count($list) > 2) {
+    $final_join = $comma . $type . ' ';
+  }
+  else {
+    $final_join = ' ' . $type . ' ';
+  }
+  // Take the last two elements off of the $list array.
+  $final = array_splice($list, -2, 2);
+  // Combine the final two removed elements around the final join string.
+  $final_string = implode($final_join, $final);
+  // Add the combined elements (now a single element) back onto the list array.
+  array_push($list, $final_string);
+  // Return the list as a text string joined together with commas (or other).
+  return implode($comma, $list);
+}
